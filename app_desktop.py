@@ -570,19 +570,19 @@ class DesktopApp:
         )
         self.lbl_stock_badge.pack(anchor="w", pady=(4, 6))
 
-        # Simulador dos 3 LEDs de Aviso do Arduino (Verde, Amarelo, Vermelho)
+        # Simulador dos 3 LEDs de Aviso + Buzzer do Arduino (Verde, Amarelo, Vermelho)
         leds_frame = tk.Frame(self.med_card, bg=COLOR_PANEL_BG)
         leds_frame.pack(fill="x", pady=(4, 0))
         tk.Label(
             leds_frame,
-            text="LED Arduino:",
+            text="LED / Buzzer Arduino:",
             font=("Segoe UI", 8, "bold"),
             bg=COLOR_PANEL_BG,
             fg=COLOR_TEXT_MUTED,
         ).pack(side="left", padx=(0, 6))
         self.lbl_led_indicator = tk.Label(
             leds_frame,
-            text="🟢 VERDE (Lote Válido & Estoque OK)",
+            text="🟢 VERDE | 🔊 1 Bipe (Lote Válido & Estoque OK)",
             font=("Segoe UI", 8, "bold"),
             bg="#064e3b",
             fg="#34d399",
@@ -843,25 +843,33 @@ class DesktopApp:
             return lote_str, val_str, "🟡 EST. BAIXO", "YELLOW"
         return lote_str, val_str, "🟢 OK / VÁLIDO", "GREEN"
 
+    def _emit_buzzer_sound(self, beeps: int = 1):
+        """Simula no PC os bipes do Buzzer do Arduino (Pino D8)."""
+        for i in range(beeps):
+            self.after(i * 180, self.bell)
+
     def _update_led_ui(self, cor_led: str):
         if cor_led == "RED":
             self.lbl_led_indicator.config(
-                text="🔴 VERMELHO (BLOQUEIO: Lote Vencido / Sem Estoque)",
+                text="🔴 VERMELHO | 🚨 Alarme 3x Bipes (Lote Vencido / Sem Estoque)",
                 bg="#7f1d1d",
                 fg="#fca5a5",
             )
+            self._emit_buzzer_sound(3)
         elif cor_led == "YELLOW":
             self.lbl_led_indicator.config(
-                text="🟡 AMARELO (ATENÇÃO: Vence <=30d / Estoque Baixo)",
+                text="🟡 AMARELO | 🔊 Alerta 2x Bipes (Vence <=30d / Estoque Baixo)",
                 bg="#78350f",
                 fg="#fcd34d",
             )
+            self._emit_buzzer_sound(2)
         else:
             self.lbl_led_indicator.config(
-                text="🟢 VERDE (Lote Válido & Estoque OK)",
+                text="🟢 VERDE | 🔊 1 Bipe OK (Lote Válido & Estoque OK)",
                 bg="#064e3b",
                 fg="#34d399",
             )
+            self._emit_buzzer_sound(1)
 
     def process_code(self, code: str):
         db: Session = SessionLocal()
