@@ -1,25 +1,34 @@
 /*
-  Firmware Arduino / ESP32:
+  Firmware Arduino / ESP32 — MEDICA SENTINELA ENF:
   - Display OLED SSD1306 (128x64) via I2C
-  - Teclado Matricial 4x4 (Digitação de Quantidade e Seleção de Modo)
   - 3 LEDs de Aviso (Verde, Amarelo e Vermelho para Estoque e Validade de Lotes)
+  - Buzzer Sonoro (Feedback de Leitura, Alerta de Vencimento e Alarme de Bloqueio)
+  - Teclado Matricial 4x4 (Digitação de Quantidade e Seleção de Modo)
 
-  Integrado com a Estação Python (scanner_station.py / app_desktop.py)
+  Integrado com a Estação Python (app_desktop.py / scanner_station.py)
   e o Banco de Dados de Medicamentos, Lotes e Validade (FEFO).
 
-  1. Conexões do Display OLED (0.96" I2C):
-     - VCC -> 3.3V ou 5V | GND -> GND
-     - SDA -> A4 (Uno) ou Pino 8/21 (ESP32)
-     - SCL -> A5 (Uno) ou Pino 9/22 (ESP32)
+  =====================================================================
+  MAPA DE PINOS (ARDUINO UNO / NANO):
+  =====================================================================
+  1. Display OLED 0.96" (I2C - 4 Pinos):
+     - VCC -> 5V (ou 3.3V)
+     - GND -> GND
+     - SDA -> Pino A4 (Uno/Nano) | GPIO 21 (ESP32)
+     - SCL -> Pino A5 (Uno/Nano) | GPIO 22 (ESP32)
 
-  2. Conexões dos LEDs de Aviso (com resistor de 220 ohms):
-     - LED_VERDE    (Pino 10): Lote válido e estoque OK
-     - LED_AMARELO  (Pino 11): Alerta! Lote vence em <= 30 dias ou estoque baixo
-     - LED_VERMELHO (Pino 12): Bloqueio! Lote VENCIDO ou estoque esgotado
+  2. LEDs de Aviso (cada um com resistor de 220 ohms para o GND):
+     - LED_VERDE    -> Pino D10 : Lote válido e estoque OK
+     - LED_AMARELO  -> Pino D11 : Alerta! Lote vence em <= 30 dias ou estoque baixo
+     - LED_VERMELHO -> Pino D12 : Bloqueio! Lote VENCIDO ou estoque esgotado
 
-  3. Conexões do Teclado Matricial 4x4:
-     - Linhas (R1..R4)  -> Pinos 2, 3, 4, 5
-     - Colunas (C1..C4) -> Pinos 6, 7, A2, A3
+  3. Buzzer (Ativo ou Passivo):
+     - PINO_BUZZER (+) -> Pino D8
+     - GND (-)         -> GND (opcional: resistor de 100 ohms em série)
+
+  4. Teclado Matricial 4x4 (8 Pinos):
+     - Linhas (R1..R4)  -> Pinos D2, D3, D4, D5
+     - Colunas (C1..C4) -> Pinos D6, D7, A2, A3
      - Funções das Teclas:
        * '0' a '9' : Digita a quantidade (ex: 50 caixas do lote)
        * 'A'       : Muda para Modo SAÍDA (Dispensação FEFO)
@@ -46,6 +55,9 @@
 #define LED_AMARELO   11
 #define LED_VERMELHO  12
 
+// Pino do Buzzer Sonoro
+#define PINO_BUZZER   8
+
 // Configuração do Teclado Matricial 4x4
 const byte LINHAS = 4;
 const byte COLUNAS = 4;
@@ -66,8 +78,43 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 String modoOperacao = "SAIDA";
 String bufferQuantidade = "";
 
-// Aciona os LEDs físicos conforme o status de Validade e Estoque recebido do sistema
-void acionarLedsAviso(String corLed) {
+// ================= FUNÇÕES SONORAS DO BUZZER =================
+
+// Bipe curto ao pressionar qualquer tecla do teclado matricial
+void somCliqueTecla() {
+  tone(PINO_BUZZER, 2200, 35);
+}
+
+// Som ao limpar a digitação (*)
+void somLimpar() {
+  tone(PINO_BUZZER, 900, 70);
+}
+
+// Som duplo ascendente ao confirmar envio (#)
+void somConfirmarComando() {
+  tone(PINO_BUZZER, 1600, 60);
+  delay(75);
+  tone(PINO_BUZZER, 2400, 90);
+}
+
+// Bipe de leitura OK (Verde - Lote válido e estoque normal)
+void somSucessoVerde() {
+  tone(PINO_BUZZER, 2000, 90);
+  delay(100);
+  noTone(PINO_BUZZER);
+}
+
+// Bipe duplo de atenção (Amarelo - Vence em <= 30 dias ou estoque baixo)
+void somAlertaAmarelo() {
+  for (int i = 0; i < 2; i++) {
+    tone(PINO_BUZZER, 1200, 130);
+    delay(180);
+  }
+  noTone(PINO_BUZZER);
+}
+
+// Aciona os LEDs físicos e o Buzzer conforme o status de Validade e Estoque recebido do sistema
+void acionarLedsEBuzzer(String corLed) {
   digitalWrite(LED_VERDE, LOW);
   digitalWrite(LED_AMARELO, LOW);
   digitalWrite(LED_VERMELHO, LOW);
@@ -77,17 +124,21 @@ void acionarLedsAviso(String corLed) {
 
   if (corLed == "GREEN" || corLed == "OK") {
     digitalWrite(LED_VERDE, HIGH);
+    somSucessoVerde();
   } else if (corLed == "YELLOW" || corLed == "WARN") {
     digitalWrite(LED_AMARELO, HIGH);
+    somAlertaAmarelo();
   } else if (corLed == "RED" || corLed == "EXPIRED" || corLed == "ERROR") {
-    // Pisca o LED Vermelho 3 vezes rápido para chamar atenção de Lote Vencido / Bloqueado
+    // Alarme crítico: Pisca o LED Vermelho 3 vezes sincronizado com o Buzzer (Lote Vencido / Bloqueado)
     for (int i = 0; i < 3; i++) {
       digitalWrite(LED_VERMELHO, HIGH);
-      delay(150);
+      tone(PINO_BUZZER, 650, 160);
+      delay(170);
       digitalWrite(LED_VERMELHO, LOW);
-      delay(150);
+      delay(120);
     }
     digitalWrite(LED_VERMELHO, HIGH);
+    noTone(PINO_BUZZER);
   }
 }
 
@@ -122,15 +173,19 @@ void setup() {
   pinMode(LED_VERDE, OUTPUT);
   pinMode(LED_AMARELO, OUTPUT);
   pinMode(LED_VERMELHO, OUTPUT);
+  pinMode(PINO_BUZZER, OUTPUT);
 
-  // Teste rápido dos 3 LEDs ao ligar (auto-diagnóstico)
-  digitalWrite(LED_VERDE, HIGH);    delay(200); digitalWrite(LED_VERDE, LOW);
-  digitalWrite(LED_AMARELO, HIGH);  delay(200); digitalWrite(LED_AMARELO, LOW);
-  digitalWrite(LED_VERMELHO, HIGH); delay(200); digitalWrite(LED_VERMELHO, LOW);
+  // Auto-diagnóstico rápido dos 3 LEDs + Buzzer ao ligar
+  digitalWrite(LED_VERDE, HIGH);    tone(PINO_BUZZER, 1400, 100); delay(150); digitalWrite(LED_VERDE, LOW);
+  digitalWrite(LED_AMARELO, HIGH);  tone(PINO_BUZZER, 1800, 100); delay(150); digitalWrite(LED_AMARELO, LOW);
+  digitalWrite(LED_VERMELHO, HIGH); tone(PINO_BUZZER, 2200, 120); delay(150); digitalWrite(LED_VERMELHO, LOW);
+  noTone(PINO_BUZZER);
   digitalWrite(LED_VERDE, HIGH); // Inicia com LED Verde indicando sistema pronto
 
   if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
     Serial.println(F("ERR:OLED_NOT_FOUND"));
+    // Alerta sonoro caso o display OLED esteja desconectado
+    tone(PINO_BUZZER, 400, 600);
     for (;;);
   }
 
@@ -149,8 +204,10 @@ void setup() {
     display.print(progresso);
     display.println(F("%"));
     display.display();
-    delay(180);
+    delay(150);
   }
+
+  somSucessoVerde();
 
   exibirNoOled(
     "[ MEDICA SENTINELA ]",
@@ -163,26 +220,33 @@ void loop() {
   char tecla = teclado.getKey();
   if (tecla) {
     if (tecla >= '0' && tecla <= '9') {
+      somCliqueTecla();
       if (bufferQuantidade.length() < 4) {
         bufferQuantidade += tecla;
       }
       atualizarTelaTeclado();
     } else if (tecla == 'A') {
+      somCliqueTecla();
       modoOperacao = "SAIDA";
       atualizarTelaTeclado();
     } else if (tecla == 'B') {
+      somCliqueTecla();
       modoOperacao = "ENTRADA";
       atualizarTelaTeclado();
     } else if (tecla == 'C') {
+      somCliqueTecla();
       modoOperacao = "CONSULTA";
       atualizarTelaTeclado();
     } else if (tecla == 'D') {
+      somCliqueTecla();
       Serial.println("KEY:ALERTA:0");
       exibirNoOled("[ CONSULTANDO... ]", "Buscando lotes\nvencidos ou baixos...");
     } else if (tecla == '*') {
+      somLimpar();
       bufferQuantidade = "";
       atualizarTelaTeclado();
     } else if (tecla == '#') {
+      somConfirmarComando();
       int qtd = bufferQuantidade.length() > 0 ? bufferQuantidade.toInt() : 1;
       if (qtd <= 0) qtd = 1;
 
@@ -215,7 +279,7 @@ void loop() {
       }
     }
 
-    acionarLedsAviso(corLed);
+    acionarLedsEBuzzer(corLed);
     msg.replace(" | ", "\n");
     msg.replace("|", "\n");
 
